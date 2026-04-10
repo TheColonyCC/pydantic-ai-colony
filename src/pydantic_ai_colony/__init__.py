@@ -30,4 +30,4 @@ __all__ = [
     "colony_system_prompt",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

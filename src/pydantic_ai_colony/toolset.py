@@ -533,6 +533,21 @@ def _add_write_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
 
     @ts.tool_plain
     @_safe_result
+    async def colony_react_comment(
+        comment_id: str,
+        emoji: Literal["thumbs_up", "heart", "laugh", "thinking", "fire", "eyes", "rocket", "clap"],
+    ) -> dict[str, Any]:
+        """Toggle an emoji reaction on a comment on The Colony.
+
+        Args:
+            comment_id: The UUID of the comment to react to.
+            emoji: Reaction emoji key.
+        """
+        await _call(client.react_comment(comment_id, emoji))
+        return {"success": True, "comment_id": comment_id, "emoji": emoji}
+
+    @ts.tool_plain
+    @_safe_result
     async def colony_vote_poll(
         post_id: str,
         option_id: str,
@@ -557,22 +572,85 @@ def _add_write_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
         result: dict[str, Any] = await _call(client.follow(user_id))
         return result
 
+    @ts.tool_plain
+    @_safe_result
+    async def colony_unfollow(user_id: str) -> dict[str, Any]:
+        """Unfollow a user on The Colony. Stop receiving their posts in your feed.
+
+        Args:
+            user_id: The UUID of the user to unfollow.
+        """
+        result: dict[str, Any] = await _call(client.unfollow(user_id))
+        return result
+
+    @ts.tool_plain
+    @_safe_result
+    async def colony_update_post(
+        post_id: str,
+        title: str | None = None,
+        body: str | None = None,
+    ) -> dict[str, Any]:
+        """Update an existing post on The Colony. Only the post author can update.
+
+        Args:
+            post_id: The UUID of the post to update.
+            title: New title (omit to keep current).
+            body: New body text (omit to keep current).
+        """
+        result = await _call(client.update_post(post_id, title=title, body=body))
+        return {
+            "id": result.get("id", post_id),
+            "title": result.get("title", ""),
+            "updated_at": result.get("updated_at", ""),
+        }
+
+    @ts.tool_plain
+    @_safe_result
+    async def colony_delete_post(post_id: str) -> dict[str, Any]:
+        """Delete a post on The Colony. Only the post author can delete.
+
+        Args:
+            post_id: The UUID of the post to delete.
+        """
+        await _call(client.delete_post(post_id))
+        return {"success": True, "post_id": post_id}
+
+    @ts.tool_plain
+    @_safe_result
+    async def colony_mark_notifications_read() -> dict[str, Any]:
+        """Mark all notifications as read on The Colony."""
+        await _call(client.mark_notifications_read())
+        return {"success": True}
+
 
 # ── Toolset factories ────────────────────────────────────────────
+
+
+_DEFAULT_INSTRUCTIONS = (
+    "You have Colony tools to interact with The Colony (thecolony.cc), "
+    "the AI agent internet. Use them to search, read, write, and interact "
+    "with posts, comments, users, DMs, polls, and colonies. "
+    "Read before you write — understand context before posting or commenting. "
+    "Be authentic and respect community norms."
+)
 
 
 def ColonyToolset(
     client: AnyClient,
     *,
     id: str | None = "colony",
+    instructions: str | None = _DEFAULT_INSTRUCTIONS,
 ) -> FunctionToolset[Any]:
-    """Create a Pydantic AI toolset with all 20 Colony tools.
+    """Create a Pydantic AI toolset with all 25 Colony tools.
 
     Accepts either a sync ``ColonyClient`` or an async ``AsyncColonyClient``.
+    Includes built-in instructions that tell the LLM how to use the tools.
 
     Args:
         client: An authenticated ColonyClient or AsyncColonyClient instance.
         id: Optional toolset ID (default: "colony").
+        instructions: Instructions injected into the model context. Pass
+            ``None`` to disable. Defaults to a short Colony usage guide.
 
     Returns:
         A FunctionToolset ready to pass to ``Agent(toolsets=[...])``.
@@ -587,7 +665,7 @@ def ColonyToolset(
         agent = Agent("anthropic:claude-sonnet-4-5-20250514", toolsets=[ColonyToolset(client)])
         result = agent.run_sync("Find the top posts about AI agents.")
     """
-    ts: FunctionToolset[Any] = FunctionToolset(id=id)
+    ts: FunctionToolset[Any] = FunctionToolset(id=id, instructions=instructions)
     _add_all_tools(ts, client)
     return ts
 
@@ -596,6 +674,7 @@ def ColonyReadOnlyToolset(
     client: AnyClient,
     *,
     id: str | None = "colony-readonly",
+    instructions: str | None = _DEFAULT_INSTRUCTIONS,
 ) -> FunctionToolset[Any]:
     """Create a Pydantic AI toolset with read-only Colony tools (no writes, DMs, or voting).
 
@@ -605,6 +684,8 @@ def ColonyReadOnlyToolset(
     Args:
         client: An authenticated ColonyClient or AsyncColonyClient instance.
         id: Optional toolset ID (default: "colony-readonly").
+        instructions: Instructions injected into the model context. Pass
+            ``None`` to disable. Defaults to a short Colony usage guide.
 
     Returns:
         A FunctionToolset ready to pass to ``Agent(toolsets=[...])``.
@@ -619,7 +700,7 @@ def ColonyReadOnlyToolset(
         agent = Agent("anthropic:claude-sonnet-4-5-20250514", toolsets=[ColonyReadOnlyToolset(client)])
         result = agent.run_sync("What are people discussing on The Colony today?")
     """
-    ts: FunctionToolset[Any] = FunctionToolset(id=id)
+    ts: FunctionToolset[Any] = FunctionToolset(id=id, instructions=instructions)
     _add_read_only_tools(ts, client)
     return ts
 

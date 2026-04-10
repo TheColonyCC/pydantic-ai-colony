@@ -188,8 +188,17 @@ def _mock_client(**overrides: Any) -> MagicMock:
     client.vote_post.return_value = {"success": True}
     client.vote_comment.return_value = {"success": True}
     client.react_post.return_value = {"success": True}
+    client.react_comment.return_value = {"success": True}
     client.vote_poll.return_value = {"success": True}
     client.follow.return_value = {"success": True}
+    client.unfollow.return_value = {"success": True}
+    client.update_post.return_value = {
+        "id": "post-1",
+        "title": "Updated Title",
+        "updated_at": "2026-01-02T00:00:00Z",
+    }
+    client.delete_post.return_value = {"success": True}
+    client.mark_notifications_read.return_value = None
 
     for key, value in overrides.items():
         setattr(client, key, value)
@@ -204,7 +213,7 @@ class TestColonyToolset:
         client = _mock_client()
         ts = ColonyToolset(client)
         assert ts.id == "colony"
-        assert len(ts.tools) == 20
+        assert len(ts.tools) == 25
 
     def test_custom_id(self) -> None:
         client = _mock_client()
@@ -234,8 +243,13 @@ class TestColonyToolset:
             "colony_vote_post",
             "colony_vote_comment",
             "colony_react_post",
+            "colony_react_comment",
             "colony_vote_poll",
             "colony_follow",
+            "colony_unfollow",
+            "colony_update_post",
+            "colony_delete_post",
+            "colony_mark_notifications_read",
         }
         assert names == expected
 
@@ -258,8 +272,13 @@ class TestColonyReadOnlyToolset:
             "colony_vote_post",
             "colony_vote_comment",
             "colony_react_post",
+            "colony_react_comment",
             "colony_vote_poll",
             "colony_follow",
+            "colony_unfollow",
+            "colony_update_post",
+            "colony_delete_post",
+            "colony_mark_notifications_read",
         }
         assert names.isdisjoint(write_tools)
 
@@ -533,6 +552,88 @@ class TestFollowTool:
         result = await fn(user_id="user-1")
         client.follow.assert_called_once_with("user-1")
         assert result == {"success": True}
+
+
+class TestUnfollowTool:
+    @pytest.mark.asyncio
+    async def test_calls_sdk(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_unfollow"].function
+        result = await fn(user_id="user-1")
+        client.unfollow.assert_called_once_with("user-1")
+        assert result == {"success": True}
+
+
+class TestReactCommentTool:
+    @pytest.mark.asyncio
+    async def test_calls_sdk(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_react_comment"].function
+        result = await fn(comment_id="comment-1", emoji="heart")
+        client.react_comment.assert_called_once_with("comment-1", "heart")
+        assert result["emoji"] == "heart"
+        assert result["comment_id"] == "comment-1"
+
+
+class TestUpdatePostTool:
+    @pytest.mark.asyncio
+    async def test_calls_sdk(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_update_post"].function
+        result = await fn(post_id="post-1", title="Updated Title", body="New body")
+        client.update_post.assert_called_once_with("post-1", title="Updated Title", body="New body")
+        assert result["title"] == "Updated Title"
+        assert result["updated_at"] == "2026-01-02T00:00:00Z"
+
+
+class TestDeletePostTool:
+    @pytest.mark.asyncio
+    async def test_calls_sdk(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_delete_post"].function
+        result = await fn(post_id="post-1")
+        client.delete_post.assert_called_once_with("post-1")
+        assert result["success"] is True
+
+
+class TestMarkNotificationsReadTool:
+    @pytest.mark.asyncio
+    async def test_calls_sdk(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_mark_notifications_read"].function
+        result = await fn()
+        client.mark_notifications_read.assert_called_once()
+        assert result["success"] is True
+
+
+# ── Instructions tests ───────────────────────────────────────────
+
+
+class TestToolsetInstructions:
+    def test_default_instructions(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        assert ts._instructions is not None
+
+    def test_custom_instructions(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client, instructions="Custom instructions")
+        assert "Custom instructions" in ts._instructions
+
+    def test_no_instructions(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client, instructions=None)
+        assert len(ts._instructions) == 0
+
+    def test_readonly_has_instructions(self) -> None:
+        client = _mock_client()
+        ts = ColonyReadOnlyToolset(client)
+        assert ts._instructions is not None
 
 
 # ── System prompt tests ──────────────────────────────────────────
