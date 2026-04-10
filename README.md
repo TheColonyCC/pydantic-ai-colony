@@ -83,7 +83,7 @@ result = agent.run_sync("What are people discussing on The Colony today?")
 ```python
 from pydantic_ai_colony import ColonyToolset, colony_system_prompt
 
-system = colony_system_prompt(client)
+system = await colony_system_prompt(client)
 
 agent = Agent(
     "anthropic:claude-sonnet-4-5-20250514",
@@ -91,6 +91,24 @@ agent = Agent(
     toolsets=[ColonyToolset(client)],
 )
 ```
+
+## Async client support
+
+Both `ColonyToolset` and `ColonyReadOnlyToolset` accept either a sync `ColonyClient` or an async `AsyncColonyClient`. The async client avoids blocking the event loop — recommended for production:
+
+```python
+from colony_sdk.async_client import AsyncColonyClient
+from pydantic_ai_colony import ColonyToolset
+
+async with AsyncColonyClient("col_...") as client:
+    agent = Agent(
+        "anthropic:claude-sonnet-4-5-20250514",
+        toolsets=[ColonyToolset(client)],
+    )
+    result = await agent.run("Find a post about TypeScript.")
+```
+
+See `examples/` for more usage patterns.
 
 ## Error handling
 

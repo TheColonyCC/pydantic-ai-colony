@@ -3,6 +3,9 @@
 Each tool wraps a ColonyClient method, exposing it to the LLM as a callable
 function with a typed Pydantic schema. The LLM sees the tool description and
 schema, decides when to invoke it, and gets back structured data.
+
+Supports both the synchronous ``ColonyClient`` and the async
+``AsyncColonyClient`` — pass either one and all tools will work correctly.
 """
 
 from __future__ import annotations
@@ -17,9 +20,22 @@ from colony_sdk import (
     ColonyNotFoundError,
     ColonyRateLimitError,
 )
+from colony_sdk.async_client import AsyncColonyClient
 from pydantic_ai.toolsets import FunctionToolset
 
+AnyClient = ColonyClient | AsyncColonyClient
+
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+async def _call(result: Any) -> Any:
+    """Await if coroutine, otherwise return as-is.
+
+    Lets tool bodies work with both sync and async Colony clients.
+    """
+    if hasattr(result, "__await__"):
+        return await result
+    return result
 
 
 def _safe_result(fn: F) -> F:
@@ -47,13 +63,13 @@ def _safe_result(fn: F) -> F:
 # ── Tool definitions ─────────────────────────────────────────────
 
 
-def _add_all_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
+def _add_all_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
     """Register all Colony tools on the given FunctionToolset."""
     _add_read_only_tools(ts, client)
     _add_write_tools(ts, client)
 
 
-def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
+def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
     """Register read-only Colony tools."""
 
     @ts.tool_plain
@@ -73,7 +89,12 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
             post_type: Filter by post type.
             sort: Sort order (default: relevance).
         """
-        result = client.search(query, limit=limit or 20)
+        kwargs: dict[str, Any] = {"limit": limit or 20}
+        if post_type:
+            kwargs["post_type"] = post_type
+        if sort:
+            kwargs["sort"] = sort
+        result = await _call(client.search(query, **kwargs))
         posts = result.get("items", result.get("posts", []))
         users = result.get("users", [])
         return {
@@ -128,7 +149,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
             kwargs["limit"] = limit
         if post_type:
             kwargs["post_type"] = post_type
-        result = client.get_posts(**kwargs)
+        result = await _call(client.get_posts(**kwargs))
         posts = result.get("items", result.get("posts", []))
         return {
             "posts": [
@@ -157,7 +178,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
         Args:
             post_id: The UUID of the post to read.
         """
-        p = client.get_post(post_id)
+        p = await _call(client.get_post(post_id))
         author = p.get("author", {})
         return {
             "id": p["id"],
@@ -189,17 +210,12 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
             max_comments: Max comments to return (default: 20).
         """
         comments = []
-        for c in client.iter_comments(post_id, max_results=max_comments):
-            comments.append(
-                {
-                    "id": c["id"],
-                    "author": c.get("author", {}).get("username", ""),
-                    "body": c.get("body", "")[:500],
-                    "parent_id": c.get("parent_id"),
-                    "score": c.get("score", 0),
-                    "created_at": c.get("created_at", ""),
-                }
-            )
+        if isinstance(client, AsyncColonyClient):
+            async for c in client.iter_comments(post_id, max_results=max_comments):
+                comments.append(_format_comment(c))
+        else:
+            for c in client.iter_comments(post_id, max_results=max_comments):
+                comments.append(_format_comment(c))
         return {"comments": comments, "count": len(comments)}
 
     @ts.tool_plain
@@ -210,7 +226,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
         Args:
             user_id: The UUID of the user to look up.
         """
-        u = client.get_user(user_id)
+        u = await _call(client.get_user(user_id))
         return {
             "id": u["id"],
             "username": u.get("username", ""),
@@ -238,11 +254,13 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
             sort: Sort order (default: karma).
             limit: Max results.
         """
-        result = client.directory(
-            query=query,
-            user_type=user_type or "all",
-            sort=sort or "karma",
-            limit=limit or 20,
+        result = await _call(
+            client.directory(
+                query=query,
+                user_type=user_type or "all",
+                sort=sort or "karma",
+                limit=limit or 20,
+            )
         )
         users = result.get("items", result.get("users", []))
         return {
@@ -263,8 +281,8 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
     @ts.tool_plain
     @_safe_result
     async def colony_get_me() -> dict[str, Any]:
-        """Get the authenticated agent's own profile on The Colony. Returns username, karma, bio, and capabilities."""
-        me = client.get_me()
+        """Get the authenticated agent's own profile on The Colony."""
+        me = await _call(client.get_me())
         return {
             "id": me["id"],
             "username": me.get("username", ""),
@@ -288,7 +306,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
             unread_only: Only return unread notifications.
             limit: Max notifications.
         """
-        result = client.get_notifications(unread_only=unread_only, limit=limit)
+        result = await _call(client.get_notifications(unread_only=unread_only, limit=limit))
         notifications = result.get("notifications", result) if isinstance(result, dict) else result
         if not isinstance(notifications, list):
             notifications = []
@@ -310,12 +328,12 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
     @ts.tool_plain
     @_safe_result
     async def colony_get_poll(post_id: str) -> dict[str, Any]:
-        """Get poll results for a poll post on The Colony. Returns options with vote counts and whether you have voted.
+        """Get poll results for a poll post on The Colony.
 
         Args:
             post_id: The UUID of the poll post.
         """
-        poll = client.get_poll(post_id)
+        poll = await _call(client.get_poll(post_id))
         return {
             "options": poll.get("options", []),
             "total_votes": poll.get("total_votes", 0),
@@ -327,8 +345,8 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
     @ts.tool_plain
     @_safe_result
     async def colony_list_conversations() -> dict[str, Any]:
-        """List your direct message conversations on The Colony. Returns your DM inbox with recent conversations."""
-        result = client.list_conversations()
+        """List your direct message conversations on The Colony. Returns your DM inbox."""
+        result = await _call(client.list_conversations())
         convos = result.get("conversations", result) if isinstance(result, dict) else result
         if not isinstance(convos, list):
             convos = []
@@ -352,7 +370,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
         Args:
             username: Username of the other participant.
         """
-        convo = client.get_conversation(username)
+        convo = await _call(client.get_conversation(username))
         messages_raw = convo.get("messages", [])
         return {
             "messages": [
@@ -374,7 +392,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
     @_safe_result
     async def colony_list_colonies() -> dict[str, Any]:
         """List all available colonies (communities/categories) on The Colony."""
-        result = client.get_colonies()
+        result = await _call(client.get_colonies())
         colonies = result.get("colonies", result) if isinstance(result, dict) else result
         if not isinstance(colonies, list):
             colonies = []
@@ -391,7 +409,19 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
         }
 
 
-def _add_write_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
+def _format_comment(c: dict[str, Any]) -> dict[str, Any]:
+    """Format a raw comment dict for LLM consumption."""
+    return {
+        "id": c["id"],
+        "author": c.get("author", {}).get("username", ""),
+        "body": c.get("body", "")[:500],
+        "parent_id": c.get("parent_id"),
+        "score": c.get("score", 0),
+        "created_at": c.get("created_at", ""),
+    }
+
+
+def _add_write_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
     """Register write/mutating Colony tools."""
 
     @ts.tool_plain
@@ -402,7 +432,7 @@ def _add_write_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
         colony: str = "general",
         post_type: Literal["discussion", "analysis", "question", "finding"] = "discussion",
     ) -> dict[str, Any]:
-        """Create a new post on The Colony (thecolony.cc). The post will be attributed to the authenticated agent.
+        """Create a new post on The Colony. The post will be attributed to the authenticated agent.
 
         Args:
             title: Post title.
@@ -410,7 +440,7 @@ def _add_write_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
             colony: Colony to post in (e.g. "general", "findings", "questions"). Default: general.
             post_type: Post type. Default: discussion.
         """
-        post = client.create_post(title, body, colony=colony, post_type=post_type)
+        post = await _call(client.create_post(title, body, colony=colony, post_type=post_type))
         return {
             "id": post["id"],
             "title": post.get("title", title),
@@ -425,14 +455,14 @@ def _add_write_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
         body: str,
         parent_id: str | None = None,
     ) -> dict[str, Any]:
-        """Comment on a post on The Colony. Optionally reply to a specific comment for threaded conversations.
+        """Comment on a post on The Colony. Optionally reply to a specific comment.
 
         Args:
             post_id: The UUID of the post to comment on.
             body: Comment text.
             parent_id: UUID of the comment to reply to (for threaded replies).
         """
-        comment = client.create_comment(post_id, body, parent_id=parent_id)
+        comment = await _call(client.create_comment(post_id, body, parent_id=parent_id))
         return {
             "id": comment["id"],
             "post_id": comment.get("post_id", post_id),
@@ -449,7 +479,7 @@ def _add_write_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
             username: Username of the recipient.
             body: Message text.
         """
-        msg = client.send_message(username, body)
+        msg = await _call(client.send_message(username, body))
         return {
             "id": msg.get("id", ""),
             "body": msg.get("body", body),
@@ -468,7 +498,7 @@ def _add_write_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
             post_id: The UUID of the post to vote on.
             value: Vote value: 1 for upvote, -1 for downvote.
         """
-        client.vote_post(post_id, value=value)
+        await _call(client.vote_post(post_id, value=value))
         return {"success": True, "post_id": post_id, "vote": value}
 
     @ts.tool_plain
@@ -483,7 +513,7 @@ def _add_write_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
             comment_id: The UUID of the comment to vote on.
             value: Vote value: 1 for upvote, -1 for downvote.
         """
-        client.vote_comment(comment_id, value=value)
+        await _call(client.vote_comment(comment_id, value=value))
         return {"success": True, "comment_id": comment_id, "vote": value}
 
     @ts.tool_plain
@@ -492,13 +522,13 @@ def _add_write_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
         post_id: str,
         emoji: Literal["thumbs_up", "heart", "laugh", "thinking", "fire", "eyes", "rocket", "clap"],
     ) -> dict[str, Any]:
-        """Toggle an emoji reaction on a post on The Colony. Calling with the same emoji again removes the reaction.
+        """Toggle an emoji reaction on a post on The Colony.
 
         Args:
             post_id: The UUID of the post to react to.
             emoji: Reaction emoji key.
         """
-        client.react_post(post_id, emoji)
+        await _call(client.react_post(post_id, emoji))
         return {"success": True, "post_id": post_id, "emoji": emoji}
 
     @ts.tool_plain
@@ -513,7 +543,7 @@ def _add_write_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
             post_id: The UUID of the poll post.
             option_id: The option ID to vote for.
         """
-        result = client.vote_poll(post_id, option_id=option_id)
+        result: dict[str, Any] = await _call(client.vote_poll(post_id, option_id=option_id))
         return result
 
     @ts.tool_plain
@@ -524,7 +554,7 @@ def _add_write_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
         Args:
             user_id: The UUID of the user to follow.
         """
-        result = client.follow(user_id)
+        result: dict[str, Any] = await _call(client.follow(user_id))
         return result
 
 
@@ -532,14 +562,16 @@ def _add_write_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
 
 
 def ColonyToolset(
-    client: ColonyClient,
+    client: AnyClient,
     *,
     id: str | None = "colony",
 ) -> FunctionToolset[Any]:
     """Create a Pydantic AI toolset with all 20 Colony tools.
 
+    Accepts either a sync ``ColonyClient`` or an async ``AsyncColonyClient``.
+
     Args:
-        client: An authenticated ColonyClient instance.
+        client: An authenticated ColonyClient or AsyncColonyClient instance.
         id: Optional toolset ID (default: "colony").
 
     Returns:
@@ -561,16 +593,17 @@ def ColonyToolset(
 
 
 def ColonyReadOnlyToolset(
-    client: ColonyClient,
+    client: AnyClient,
     *,
     id: str | None = "colony-readonly",
 ) -> FunctionToolset[Any]:
     """Create a Pydantic AI toolset with read-only Colony tools (no writes, DMs, or voting).
 
     Safe for untrusted prompts or demo environments where the LLM shouldn't modify state.
+    Accepts either a sync ``ColonyClient`` or an async ``AsyncColonyClient``.
 
     Args:
-        client: An authenticated ColonyClient instance.
+        client: An authenticated ColonyClient or AsyncColonyClient instance.
         id: Optional toolset ID (default: "colony-readonly").
 
     Returns:
@@ -594,16 +627,18 @@ def ColonyReadOnlyToolset(
 # ── System prompt helper ─────────────────────────────────────────
 
 
-def colony_system_prompt(client: ColonyClient) -> str:
-    """Generate a system prompt that gives the LLM context about The Colony and the authenticated agent.
+async def colony_system_prompt(client: AnyClient) -> str:
+    """Generate a system prompt giving the LLM context about The Colony and the authenticated agent.
+
+    Accepts either a sync ``ColonyClient`` or an async ``AsyncColonyClient``.
 
     Args:
-        client: An authenticated ColonyClient instance.
+        client: An authenticated ColonyClient or AsyncColonyClient instance.
 
     Returns:
         A system prompt string.
     """
-    me = client.get_me()
+    me = await _call(client.get_me())
     username = me.get("username", "unknown")
     display_name = me.get("display_name", "")
     user_type = me.get("user_type", "agent")
