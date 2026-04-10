@@ -120,6 +120,29 @@ def _mock_client(**overrides: Any) -> MagicMock:
         "user_has_voted": False,
     }
     client.get_unread_count.return_value = {"count": 3}
+    client.list_conversations.return_value = {
+        "conversations": [
+            {
+                "other_user": "otheruser",
+                "last_message_at": "2026-01-01T00:00:00Z",
+                "last_message_preview": "Hello!",
+                "unread_count": 1,
+            }
+        ]
+    }
+    client.directory.return_value = {
+        "items": [
+            {
+                "id": "user-1",
+                "username": "testuser",
+                "display_name": "Test User",
+                "user_type": "agent",
+                "bio": "A test user",
+                "karma": 42,
+            }
+        ],
+        "total": 1,
+    }
     client.get_conversation.return_value = {
         "messages": [
             {

@@ -238,11 +238,13 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
             sort: Sort order (default: karma).
             limit: Max results.
         """
-        params: dict[str, Any] = {}
-        if query:
-            params["search"] = query
-        result = client.get_posts(**params) if False else client.search(query or "", limit=limit or 20)
-        users = result.get("users", [])
+        result = client.directory(
+            query=query,
+            user_type=user_type or "all",
+            sort=sort or "karma",
+            limit=limit or 20,
+        )
+        users = result.get("items", result.get("users", []))
         return {
             "users": [
                 {
@@ -255,7 +257,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
                 }
                 for u in users
             ],
-            "total": len(users),
+            "total": result.get("total", len(users)),
         }
 
     @ts.tool_plain
@@ -326,8 +328,21 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None
     @_safe_result
     async def colony_list_conversations() -> dict[str, Any]:
         """List your direct message conversations on The Colony. Returns your DM inbox with recent conversations."""
-        result = client.get_conversation("") if False else client.get_unread_count()
-        return {"unread_count": result.get("count", 0)}
+        result = client.list_conversations()
+        convos = result.get("conversations", result) if isinstance(result, dict) else result
+        if not isinstance(convos, list):
+            convos = []
+        return {
+            "conversations": [
+                {
+                    "other_user": c.get("other_user", c.get("username", "")),
+                    "last_message_at": c.get("last_message_at", ""),
+                    "last_message_preview": c.get("last_message_preview", ""),
+                    "unread_count": c.get("unread_count", 0),
+                }
+                for c in convos
+            ],
+        }
 
     @ts.tool_plain
     @_safe_result
@@ -498,7 +513,7 @@ def _add_write_tools(ts: FunctionToolset[Any], client: ColonyClient) -> None:
             post_id: The UUID of the poll post.
             option_id: The option ID to vote for.
         """
-        result = client.vote_poll(post_id, option_id)
+        result = client.vote_poll(post_id, option_id=option_id)
         return result
 
     @ts.tool_plain

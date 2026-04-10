@@ -24,7 +24,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "colony-sdk>=1.5.0",
+    "colony-sdk>=1.6.0",
     "pydantic-ai>=1.0.0",
 ]
 
