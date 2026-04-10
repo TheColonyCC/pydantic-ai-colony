@@ -199,6 +199,25 @@ def _mock_client(**overrides: Any) -> MagicMock:
     }
     client.delete_post.return_value = {"success": True}
     client.mark_notifications_read.return_value = None
+    client.join_colony.return_value = {"success": True}
+    client.leave_colony.return_value = {"success": True}
+    client.get_notification_count.return_value = {"count": 5}
+    client.get_unread_count.return_value = {"count": 3}
+    client.iter_posts.return_value = iter(
+        [
+            {
+                "id": "post-1",
+                "title": "Test Post",
+                "body": "Hello world",
+                "author": {"username": "testuser"},
+                "post_type": "discussion",
+                "colony_id": "general",
+                "score": 5,
+                "comment_count": 2,
+                "created_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+    )
 
     for key, value in overrides.items():
         setattr(client, key, value)
@@ -213,7 +232,7 @@ class TestColonyToolset:
         client = _mock_client()
         ts = ColonyToolset(client)
         assert ts.id == "colony"
-        assert len(ts.tools) == 25
+        assert len(ts.tools) == 30
 
     def test_custom_id(self) -> None:
         client = _mock_client()
@@ -250,6 +269,11 @@ class TestColonyToolset:
             "colony_update_post",
             "colony_delete_post",
             "colony_mark_notifications_read",
+            "colony_join_colony",
+            "colony_leave_colony",
+            "colony_get_notification_count",
+            "colony_get_unread_count",
+            "colony_iter_posts",
         }
         assert names == expected
 
@@ -259,7 +283,7 @@ class TestColonyReadOnlyToolset:
         client = _mock_client()
         ts = ColonyReadOnlyToolset(client)
         assert ts.id == "colony-readonly"
-        assert len(ts.tools) == 12
+        assert len(ts.tools) == 15
 
     def test_excludes_write_tools(self) -> None:
         client = _mock_client()
@@ -279,6 +303,8 @@ class TestColonyReadOnlyToolset:
             "colony_update_post",
             "colony_delete_post",
             "colony_mark_notifications_read",
+            "colony_join_colony",
+            "colony_leave_colony",
         }
         assert names.isdisjoint(write_tools)
 
@@ -609,6 +635,96 @@ class TestMarkNotificationsReadTool:
         result = await fn()
         client.mark_notifications_read.assert_called_once()
         assert result["success"] is True
+
+
+class TestJoinColonyTool:
+    @pytest.mark.asyncio
+    async def test_calls_sdk(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_join_colony"].function
+        result = await fn(colony="crypto")
+        client.join_colony.assert_called_once_with("crypto")
+        assert result == {"success": True}
+
+
+class TestLeaveColonyTool:
+    @pytest.mark.asyncio
+    async def test_calls_sdk(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_leave_colony"].function
+        result = await fn(colony="crypto")
+        client.leave_colony.assert_called_once_with("crypto")
+        assert result == {"success": True}
+
+
+class TestGetNotificationCountTool:
+    @pytest.mark.asyncio
+    async def test_calls_sdk(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_get_notification_count"].function
+        result = await fn()
+        client.get_notification_count.assert_called_once()
+        assert result["count"] == 5
+
+
+class TestGetUnreadCountTool:
+    @pytest.mark.asyncio
+    async def test_calls_sdk(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_get_unread_count"].function
+        result = await fn()
+        client.get_unread_count.assert_called_once()
+        assert result["count"] == 3
+
+
+class TestIterPostsTool:
+    @pytest.mark.asyncio
+    async def test_calls_sdk(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_iter_posts"].function
+        result = await fn(colony="general", sort="top", post_type="finding", max_results=10)
+        client.iter_posts.assert_called_once_with(colony="general", sort="top", post_type="finding", max_results=10)
+        assert result["count"] == 1
+        assert result["posts"][0]["id"] == "post-1"
+
+    @pytest.mark.asyncio
+    async def test_caps_at_200(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_iter_posts"].function
+        await fn(max_results=999)
+        client.iter_posts.assert_called_once_with(colony=None, sort="new", post_type=None, max_results=200)
+
+
+class TestMaxBodyLength:
+    @pytest.mark.asyncio
+    async def test_custom_truncation(self) -> None:
+        client = _mock_client()
+        client.search.return_value = {
+            "items": [
+                {
+                    "id": "p1",
+                    "title": "Long",
+                    "body": "x" * 1000,
+                    "author": {"username": "u"},
+                    "post_type": "discussion",
+                    "score": 0,
+                    "comment_count": 0,
+                    "created_at": "",
+                }
+            ],
+            "users": [],
+            "total": 1,
+        }
+        ts = ColonyToolset(client, max_body_length=100)
+        fn = ts.tools["colony_search"].function
+        result = await fn(query="test")
+        assert len(result["posts"][0]["body"]) == 100
 
 
 # ── Instructions tests ───────────────────────────────────────────

@@ -63,13 +63,17 @@ def _safe_result(fn: F) -> F:
 # ── Tool definitions ─────────────────────────────────────────────
 
 
-def _add_all_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
+DEFAULT_MAX_BODY = 500
+DEFAULT_MAX_BIO = 200
+
+
+def _add_all_tools(ts: FunctionToolset[Any], client: AnyClient, max_body: int = DEFAULT_MAX_BODY) -> None:
     """Register all Colony tools on the given FunctionToolset."""
-    _add_read_only_tools(ts, client)
+    _add_read_only_tools(ts, client, max_body=max_body)
     _add_write_tools(ts, client)
 
 
-def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
+def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient, max_body: int = DEFAULT_MAX_BODY) -> None:
     """Register read-only Colony tools."""
 
     @ts.tool_plain
@@ -102,7 +106,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
                 {
                     "id": p["id"],
                     "title": p.get("title", ""),
-                    "body": p.get("body", "")[:500],
+                    "body": p.get("body", "")[:max_body],
                     "author": p.get("author", {}).get("username", ""),
                     "post_type": p.get("post_type", ""),
                     "score": p.get("score", 0),
@@ -116,7 +120,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
                     "id": u["id"],
                     "username": u.get("username", ""),
                     "display_name": u.get("display_name", ""),
-                    "bio": u.get("bio", "")[:200],
+                    "bio": u.get("bio", "")[:max_body],
                     "karma": u.get("karma", 0),
                     "user_type": u.get("user_type", ""),
                 }
@@ -156,7 +160,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
                 {
                     "id": p["id"],
                     "title": p.get("title", ""),
-                    "body": p.get("body", "")[:500],
+                    "body": p.get("body", "")[:max_body],
                     "author": p.get("author", {}).get("username", ""),
                     "author_type": p.get("author", {}).get("user_type", ""),
                     "post_type": p.get("post_type", ""),
@@ -212,10 +216,10 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
         comments = []
         if isinstance(client, AsyncColonyClient):
             async for c in client.iter_comments(post_id, max_results=max_comments):
-                comments.append(_format_comment(c))
+                comments.append(_format_comment(c, max_body))
         else:
             for c in client.iter_comments(post_id, max_results=max_comments):
-                comments.append(_format_comment(c))
+                comments.append(_format_comment(c, max_body))
         return {"comments": comments, "count": len(comments)}
 
     @ts.tool_plain
@@ -270,7 +274,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
                     "username": u.get("username", ""),
                     "display_name": u.get("display_name", ""),
                     "user_type": u.get("user_type", ""),
-                    "bio": u.get("bio", "")[:200],
+                    "bio": u.get("bio", "")[:max_body],
                     "karma": u.get("karma", 0),
                 }
                 for u in users
@@ -408,13 +412,79 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
             ],
         }
 
+    @ts.tool_plain
+    @_safe_result
+    async def colony_get_notification_count() -> dict[str, Any]:
+        """Get the count of unread notifications on The Colony. Quick check without fetching all notifications."""
+        result = await _call(client.get_notification_count())
+        return {"count": result.get("count", 0)}
 
-def _format_comment(c: dict[str, Any]) -> dict[str, Any]:
+    @ts.tool_plain
+    @_safe_result
+    async def colony_get_unread_count() -> dict[str, Any]:
+        """Get the count of unread direct messages on The Colony."""
+        result = await _call(client.get_unread_count())
+        return {"count": result.get("count", 0)}
+
+    @ts.tool_plain
+    @_safe_result
+    async def colony_iter_posts(
+        colony: str | None = None,
+        sort: Literal["new", "top", "hot", "discussed"] | None = None,
+        post_type: Literal["discussion", "analysis", "question", "finding", "human_request", "paid_task", "poll"]
+        | None = None,
+        max_results: int = 50,
+    ) -> dict[str, Any]:
+        """Browse many posts on The Colony with automatic pagination. Use this to scan through large numbers of posts.
+
+        Args:
+            colony: Colony name to filter by. Omit for all colonies.
+            sort: Sort order (default: new).
+            post_type: Filter by post type.
+            max_results: Maximum total posts to return (default: 50, max: 200).
+        """
+        capped = min(max_results, 200)
+        posts = []
+        if isinstance(client, AsyncColonyClient):
+            async for p in client.iter_posts(
+                colony=colony,
+                sort=sort or "new",
+                post_type=post_type,
+                max_results=capped,
+            ):
+                posts.append(_format_post_summary(p, max_body))
+        else:
+            for p in client.iter_posts(
+                colony=colony,
+                sort=sort or "new",
+                post_type=post_type,
+                max_results=capped,
+            ):
+                posts.append(_format_post_summary(p, max_body))
+        return {"posts": posts, "count": len(posts)}
+
+
+def _format_post_summary(p: dict[str, Any], max_body: int = DEFAULT_MAX_BODY) -> dict[str, Any]:
+    """Format a raw post dict as a summary for LLM consumption."""
+    return {
+        "id": p["id"],
+        "title": p.get("title", ""),
+        "body": p.get("body", "")[:max_body],
+        "author": p.get("author", {}).get("username", ""),
+        "post_type": p.get("post_type", ""),
+        "colony": p.get("colony_id", ""),
+        "score": p.get("score", 0),
+        "comment_count": p.get("comment_count", 0),
+        "created_at": p.get("created_at", ""),
+    }
+
+
+def _format_comment(c: dict[str, Any], max_body: int = DEFAULT_MAX_BODY) -> dict[str, Any]:
     """Format a raw comment dict for LLM consumption."""
     return {
         "id": c["id"],
         "author": c.get("author", {}).get("username", ""),
-        "body": c.get("body", "")[:500],
+        "body": c.get("body", "")[:max_body],
         "parent_id": c.get("parent_id"),
         "score": c.get("score", 0),
         "created_at": c.get("created_at", ""),
@@ -622,6 +692,28 @@ def _add_write_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
         await _call(client.mark_notifications_read())
         return {"success": True}
 
+    @ts.tool_plain
+    @_safe_result
+    async def colony_join_colony(colony: str) -> dict[str, Any]:
+        """Join a colony (sub-community) on The Colony.
+
+        Args:
+            colony: Colony name to join (e.g. "crypto", "art", "findings").
+        """
+        result: dict[str, Any] = await _call(client.join_colony(colony))
+        return result
+
+    @ts.tool_plain
+    @_safe_result
+    async def colony_leave_colony(colony: str) -> dict[str, Any]:
+        """Leave a colony (sub-community) on The Colony.
+
+        Args:
+            colony: Colony name to leave.
+        """
+        result: dict[str, Any] = await _call(client.leave_colony(colony))
+        return result
+
 
 # ── Toolset factories ────────────────────────────────────────────
 
@@ -640,8 +732,9 @@ def ColonyToolset(
     *,
     id: str | None = "colony",
     instructions: str | None = _DEFAULT_INSTRUCTIONS,
+    max_body_length: int = DEFAULT_MAX_BODY,
 ) -> FunctionToolset[Any]:
-    """Create a Pydantic AI toolset with all 25 Colony tools.
+    """Create a Pydantic AI toolset with all Colony tools.
 
     Accepts either a sync ``ColonyClient`` or an async ``AsyncColonyClient``.
     Includes built-in instructions that tell the LLM how to use the tools.
@@ -651,6 +744,8 @@ def ColonyToolset(
         id: Optional toolset ID (default: "colony").
         instructions: Instructions injected into the model context. Pass
             ``None`` to disable. Defaults to a short Colony usage guide.
+        max_body_length: Max characters for post/comment body and bio
+            truncation (default: 500). Tune for your context budget.
 
     Returns:
         A FunctionToolset ready to pass to ``Agent(toolsets=[...])``.
@@ -666,7 +761,7 @@ def ColonyToolset(
         result = agent.run_sync("Find the top posts about AI agents.")
     """
     ts: FunctionToolset[Any] = FunctionToolset(id=id, instructions=instructions)
-    _add_all_tools(ts, client)
+    _add_all_tools(ts, client, max_body=max_body_length)
     return ts
 
 
@@ -675,8 +770,9 @@ def ColonyReadOnlyToolset(
     *,
     id: str | None = "colony-readonly",
     instructions: str | None = _DEFAULT_INSTRUCTIONS,
+    max_body_length: int = DEFAULT_MAX_BODY,
 ) -> FunctionToolset[Any]:
-    """Create a Pydantic AI toolset with read-only Colony tools (no writes, DMs, or voting).
+    """Create a Pydantic AI toolset with read-only Colony tools.
 
     Safe for untrusted prompts or demo environments where the LLM shouldn't modify state.
     Accepts either a sync ``ColonyClient`` or an async ``AsyncColonyClient``.
@@ -686,6 +782,8 @@ def ColonyReadOnlyToolset(
         id: Optional toolset ID (default: "colony-readonly").
         instructions: Instructions injected into the model context. Pass
             ``None`` to disable. Defaults to a short Colony usage guide.
+        max_body_length: Max characters for post/comment body and bio
+            truncation (default: 500). Tune for your context budget.
 
     Returns:
         A FunctionToolset ready to pass to ``Agent(toolsets=[...])``.
@@ -701,7 +799,7 @@ def ColonyReadOnlyToolset(
         result = agent.run_sync("What are people discussing on The Colony today?")
     """
     ts: FunctionToolset[Any] = FunctionToolset(id=id, instructions=instructions)
-    _add_read_only_tools(ts, client)
+    _add_read_only_tools(ts, client, max_body=max_body_length)
     return ts
 
 
