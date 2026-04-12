@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from colony_sdk.async_client import AsyncColonyClient
 
-from pydantic_ai_colony import ColonyReadOnlyToolset, ColonyToolset, colony_system_prompt
+from pydantic_ai_colony import (
+    ColonyReadOnlyToolset,
+    ColonyStandaloneToolset,
+    ColonyToolset,
+    colony_system_prompt,
+)
 from pydantic_ai_colony.toolset import _call, _safe_result
 
 
@@ -1090,3 +1097,121 @@ class TestDefensiveFallbacks:
         fn = ts.tools["colony_list_colonies"].function
         result = await fn()
         assert result == {"colonies": []}
+
+
+# ── Standalone toolset (no client required) ────────────────────────
+
+
+class TestColonyStandaloneToolset:
+    def test_creates_toolset(self) -> None:
+        ts = ColonyStandaloneToolset()
+        assert ts.id == "colony-standalone"
+        assert set(ts.tools.keys()) == {"colony_register", "colony_verify_webhook"}
+
+    def test_custom_id(self) -> None:
+        ts = ColonyStandaloneToolset(id="my-bootstrap")
+        assert ts.id == "my-bootstrap"
+
+    def test_no_client_required(self) -> None:
+        # The whole point: instantiable without any ColonyClient.
+        ts = ColonyStandaloneToolset()
+        assert "colony_register" in ts.tools
+        assert "colony_verify_webhook" in ts.tools
+
+    def test_disable_instructions(self) -> None:
+        ts = ColonyStandaloneToolset(instructions=None)
+        # Confirm we don't crash with instructions=None.
+        assert ts.id == "colony-standalone"
+
+
+class TestColonyRegisterTool:
+    @pytest.mark.asyncio
+    async def test_returns_api_key_on_success(self) -> None:
+        # ColonyClient.register is a static method on the SDK class.
+        # Patch it for the duration of the test.
+        with patch("pydantic_ai_colony.toolset.ColonyClient.register") as register:
+            register.return_value = {
+                "id": "user-new-1",
+                "username": "newagent",
+                "display_name": "New Agent",
+                "api_key": "col_freshly_minted_key",
+            }
+            ts = ColonyStandaloneToolset()
+            fn = ts.tools["colony_register"].function
+            result = await fn(
+                username="newagent",
+                display_name="New Agent",
+                bio="A brand-new agent",
+            )
+            register.assert_called_once_with("newagent", "New Agent", "A brand-new agent")
+            assert result["api_key"] == "col_freshly_minted_key"
+            assert result["username"] == "newagent"
+            assert result["id"] == "user-new-1"
+
+    @pytest.mark.asyncio
+    async def test_handles_username_taken_error(self) -> None:
+        from colony_sdk import ColonyAPIError
+
+        with patch("pydantic_ai_colony.toolset.ColonyClient.register") as register:
+            register.side_effect = ColonyAPIError("Username already taken", 409, {})
+            ts = ColonyStandaloneToolset()
+            fn = ts.tools["colony_register"].function
+            result = await fn(username="taken", display_name="Taken", bio="...")
+            # _safe_result wraps API errors as a structured error dict
+            # rather than raising — the LLM gets a clear failure signal
+            # without crashing the run.
+            assert result["code"] == "HTTP_409"
+            assert "already taken" in result["error"]
+
+
+class TestColonyVerifyWebhookTool:
+    @pytest.mark.asyncio
+    async def test_valid_signature(self) -> None:
+        secret = "supersecret"
+        payload = '{"event": "post.created"}'
+        sig = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        ts = ColonyStandaloneToolset()
+        fn = ts.tools["colony_verify_webhook"].function
+        result = await fn(payload=payload, signature=sig, secret=secret)
+        assert result == {"valid": True}
+
+    @pytest.mark.asyncio
+    async def test_invalid_signature(self) -> None:
+        ts = ColonyStandaloneToolset()
+        fn = ts.tools["colony_verify_webhook"].function
+        result = await fn(
+            payload='{"event": "post.created"}',
+            signature="0" * 64,
+            secret="supersecret",
+        )
+        assert result == {"valid": False}
+
+    @pytest.mark.asyncio
+    async def test_sha256_prefix_tolerated(self) -> None:
+        # The SDK function strips a leading "sha256=" prefix for
+        # framework compatibility (Stripe, GitHub, etc. use that style).
+        secret = "supersecret"
+        payload = "raw bytes here"
+        sig = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        ts = ColonyStandaloneToolset()
+        fn = ts.tools["colony_verify_webhook"].function
+        result = await fn(
+            payload=payload,
+            signature=f"sha256={sig}",
+            secret=secret,
+        )
+        assert result == {"valid": True}
+
+    @pytest.mark.asyncio
+    async def test_returns_error_dict_on_exception(self) -> None:
+        # Patch the underlying function to raise so we cover the
+        # exception branch. (In practice the only way to trigger this is
+        # to pass garbage that the SDK can't handle, but mocking is
+        # cleaner and doesn't depend on the SDK's input validation.)
+        with patch("pydantic_ai_colony.toolset.verify_webhook") as vw:
+            vw.side_effect = ValueError("malformed signature hex")
+            ts = ColonyStandaloneToolset()
+            fn = ts.tools["colony_verify_webhook"].function
+            result = await fn(payload="x", signature="x", secret="x")
+            assert result["valid"] is False
+            assert "malformed" in result["error"]

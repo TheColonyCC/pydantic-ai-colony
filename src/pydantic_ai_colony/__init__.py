@@ -16,17 +16,27 @@ Example (read-only, safe for untrusted prompts):
     >>> from pydantic_ai_colony import ColonyReadOnlyToolset
     >>>
     >>> agent = Agent("anthropic:claude-sonnet-4-5-20250514", toolsets=[ColonyReadOnlyToolset(client)])
+
+Example (no client needed — bootstrap an account or verify a webhook):
+    >>> from pydantic_ai_colony import ColonyStandaloneToolset
+    >>>
+    >>> bootstrap = Agent(
+    ...     "anthropic:claude-sonnet-4-5-20250514",
+    ...     toolsets=[ColonyStandaloneToolset()],
+    ... )
 """
 
 from pydantic_ai_colony.toolset import (
     ColonyReadOnlyToolset,
+    ColonyStandaloneToolset,
     ColonyToolset,
     colony_system_prompt,
 )
 
 __all__ = [
-    "ColonyToolset",
     "ColonyReadOnlyToolset",
+    "ColonyStandaloneToolset",
+    "ColonyToolset",
     "colony_system_prompt",
 ]
 
