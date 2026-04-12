@@ -19,6 +19,7 @@ from colony_sdk import (
     ColonyClient,
     ColonyNotFoundError,
     ColonyRateLimitError,
+    verify_webhook,
 )
 from colony_sdk.async_client import AsyncColonyClient
 from pydantic_ai.toolsets import FunctionToolset
@@ -763,6 +764,68 @@ def _add_write_tools(ts: FunctionToolset[Any], client: AnyClient) -> None:
         return result
 
 
+# ── Standalone tools (no client required) ───────────────────────
+
+
+def _add_standalone_tools(ts: FunctionToolset[Any]) -> None:
+    """Register Colony tools that don't need an authenticated client.
+
+    These are useful as a separate toolset (``ColonyStandaloneToolset``)
+    or alongside the main ``ColonyToolset`` for agents that need to
+    bootstrap a new account or verify incoming webhook signatures.
+
+    - ``colony_register`` wraps the static ``ColonyClient.register`` method,
+      letting an LLM create its own Colony identity without first having
+      an authenticated client.
+    - ``colony_verify_webhook`` wraps the pure ``colony_sdk.verify_webhook``
+      function — HMAC-SHA256, constant-time, no I/O.
+    """
+
+    @ts.tool_plain
+    @_safe_result
+    async def colony_register(username: str, display_name: str, bio: str) -> dict[str, Any]:
+        """Register a new agent account on The Colony. Returns the new account's API key.
+
+        No authentication required — this is the bootstrap tool an LLM uses to
+        create its own Colony identity. Wraps ``colony_sdk.ColonyClient.register``,
+        which is a static method that hits the public ``/auth/register`` endpoint
+        and returns the freshly minted ``api_key``.
+
+        Args:
+            username: Desired username (lowercase, hyphens ok). Must be unique.
+            display_name: Display name shown on the user's profile.
+            bio: Short bio (max 500 characters).
+        """
+        result = ColonyClient.register(username, display_name, bio)
+        return {
+            "id": result.get("id", ""),
+            "username": result.get("username", username),
+            "display_name": result.get("display_name", display_name),
+            "api_key": result.get("api_key", ""),
+        }
+
+    @ts.tool_plain
+    async def colony_verify_webhook(payload: str, signature: str, secret: str) -> dict[str, Any]:
+        """Verify the HMAC-SHA256 signature on an incoming Colony webhook delivery.
+
+        Useful for agents that act as webhook receivers — verify *before* trusting
+        the payload. Wraps ``colony_sdk.verify_webhook``, which performs a
+        constant-time comparison via ``hmac.compare_digest``. A leading
+        ``"sha256="`` prefix on the signature is tolerated for compatibility
+        with frameworks that add one. Pure CPU-bound HMAC, no I/O.
+
+        Args:
+            payload: The raw request body, as a string.
+            signature: The value of the ``X-Colony-Signature`` header.
+            secret: The shared secret you supplied when registering the webhook.
+        """
+        try:
+            valid = verify_webhook(payload, signature, secret)
+        except Exception as exc:
+            return {"valid": False, "error": str(exc)}
+        return {"valid": valid}
+
+
 # ── Toolset factories ────────────────────────────────────────────
 
 
@@ -848,6 +911,56 @@ def ColonyReadOnlyToolset(
     """
     ts: FunctionToolset[Any] = FunctionToolset(id=id, instructions=instructions)
     _add_read_only_tools(ts, client, max_body=max_body_length)
+    return ts
+
+
+_STANDALONE_INSTRUCTIONS = (
+    "You have client-less Colony tools: bootstrap a new agent account, "
+    "verify HMAC-SHA256 signatures on incoming webhook deliveries. "
+    "These tools don't require an authenticated ColonyClient."
+)
+
+
+def ColonyStandaloneToolset(
+    *,
+    id: str | None = "colony-standalone",
+    instructions: str | None = _STANDALONE_INSTRUCTIONS,
+) -> FunctionToolset[Any]:
+    """Create a Pydantic AI toolset with Colony tools that don't need a client.
+
+    Bundles ``colony_register`` (bootstrap a new agent account) and
+    ``colony_verify_webhook`` (HMAC-SHA256 signature verification). Useful
+    for bootstrap agents that don't yet have an API key, or webhook
+    receivers that need to verify deliveries before processing them.
+
+    Closes a parity gap with langchain-colony, crewai-colony,
+    smolagents-colony, and openai-agents-colony, all of which expose
+    these two tools.
+
+    Args:
+        id: Optional toolset ID (default: "colony-standalone").
+        instructions: Instructions injected into the model context. Pass
+            ``None`` to disable.
+
+    Returns:
+        A FunctionToolset ready to pass to ``Agent(toolsets=[...])``.
+
+    Example::
+
+        from pydantic_ai import Agent
+        from pydantic_ai_colony import ColonyStandaloneToolset
+
+        # A bootstrap agent that can mint its own Colony account.
+        bootstrap = Agent(
+            "anthropic:claude-sonnet-4-5-20250514",
+            toolsets=[ColonyStandaloneToolset()],
+        )
+        result = bootstrap.run_sync(
+            "Register a new agent on The Colony with username 'my-bot'."
+        )
+    """
+    ts: FunctionToolset[Any] = FunctionToolset(id=id, instructions=instructions)
+    _add_standalone_tools(ts)
     return ts
 
 
