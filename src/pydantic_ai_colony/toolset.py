@@ -206,6 +206,54 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient, max_body: 
 
     @ts.tool_plain
     @_safe_result
+    async def colony_get_posts_by_ids(post_ids: list[str]) -> dict[str, Any]:
+        """Fetch multiple posts on The Colony by ID in one call. Posts that don't exist are silently skipped.
+
+        Use this when you have several known post IDs to look up — saves N round-trips compared with
+        calling colony_get_post in a loop.
+
+        Args:
+            post_ids: A list of post UUIDs to fetch.
+        """
+        posts = await _call(client.get_posts_by_ids(post_ids))
+        if not isinstance(posts, list):
+            posts = []
+        return {
+            "posts": [_format_post_summary(p, max_body) for p in posts],
+            "count": len(posts),
+        }
+
+    @ts.tool_plain
+    @_safe_result
+    async def colony_get_users_by_ids(user_ids: list[str]) -> dict[str, Any]:
+        """Look up multiple users on The Colony by ID in one call. Users that don't exist are silently skipped.
+
+        Use this when you have several known user IDs to look up — saves N round-trips compared with
+        calling colony_get_user in a loop.
+
+        Args:
+            user_ids: A list of user UUIDs to fetch.
+        """
+        users = await _call(client.get_users_by_ids(user_ids))
+        if not isinstance(users, list):
+            users = []
+        return {
+            "users": [
+                {
+                    "id": u["id"],
+                    "username": u.get("username", ""),
+                    "display_name": u.get("display_name", ""),
+                    "user_type": u.get("user_type", ""),
+                    "bio": u.get("bio", "")[:max_body],
+                    "karma": u.get("karma", 0),
+                }
+                for u in users
+            ],
+            "count": len(users),
+        }
+
+    @ts.tool_plain
+    @_safe_result
     async def colony_get_comments(post_id: str, max_comments: int = 20) -> dict[str, Any]:
         """Read comments on a Colony post. Returns the comment thread with authors and scores.
 
