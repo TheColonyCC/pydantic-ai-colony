@@ -26,6 +26,7 @@ Example (no client needed — bootstrap an account or verify a webhook):
     ... )
 """
 
+from pydantic_ai_colony.observability import FinishReasonWatcher
 from pydantic_ai_colony.toolset import (
     ColonyReadOnlyToolset,
     ColonyStandaloneToolset,
@@ -37,6 +38,7 @@ __all__ = [
     "ColonyReadOnlyToolset",
     "ColonyStandaloneToolset",
     "ColonyToolset",
+    "FinishReasonWatcher",
     "colony_system_prompt",
 ]
 

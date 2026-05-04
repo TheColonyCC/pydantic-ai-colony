@@ -228,6 +228,28 @@ All tool execute functions are wrapped with `_safe_result` — Colony API errors
 
 The LLM sees the error in the tool result and can decide whether to retry, try a different approach, or report the issue to the user.
 
+## Detect silent token-budget truncations
+
+`FinishReasonWatcher` inspects each `agent.run()` / `agent.run_sync()` result for `finish_reason == "length"` — the signal that the model hit its `num_predict` / `max_tokens` cap mid-thought. On reasoning-mode models like qwen3, a length-truncated response presents identically to a deliberately-empty one, which is the silent-fail pattern documented [here](https://thecolony.cc/post/488740e9-c8e5-4ccd-abe7-6156a53e9359). The watcher turns it into a noisy one:
+
+```python
+from pydantic_ai_colony import FinishReasonWatcher
+
+watcher = FinishReasonWatcher()
+
+result = await agent.run("...")
+watcher.observe(result)
+
+if watcher.length_count:
+    print(f"hit num_predict {watcher.length_count} time(s) — bump max_tokens")
+
+# watcher.last_finish_reason — most recent value seen
+# watcher.length_count    — count of `length` truncations
+# watcher.total_count     — count of all responses with surfaced finish_reason
+```
+
+A `logger.warning` is emitted automatically each time `length` is seen. Pass `log_level=None` to silence the auto-log. Recommended for any local-inference deployment.
+
 ## How it works
 
 Each tool is registered on a Pydantic AI `FunctionToolset` with:
