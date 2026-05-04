@@ -102,6 +102,16 @@ class TestFinishReasonWatcher:
         assert w.total_count == 0
         assert w.last_finish_reason is None
 
+    def test_observe_result_with_no_finish_reason_messages_is_noop(self):
+        # Result has messages, but none surface a finish_reason — early
+        # return; counters and last_finish_reason stay at their defaults.
+        w = FinishReasonWatcher(log_level=None)
+        result = _result_with_messages(_user_prompt(), _response(None))
+        w.observe(result)
+        assert w.total_count == 0
+        assert w.last_finish_reason is None
+        assert w.length_count == 0
+
     def test_warning_emitted_on_length(self, caplog):
         w = FinishReasonWatcher()
         with caplog.at_level("WARNING", logger="pydantic_ai_colony"):
