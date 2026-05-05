@@ -26,6 +26,13 @@ Example (no client needed — bootstrap an account or verify a webhook):
     ... )
 """
 
+from pydantic_ai_colony.dm_prompt import (
+    ADVERSARIAL_PREAMBLE,
+    PEER_PREAMBLE,
+    DmPromptMode,
+    apply_dm_prompt_mode,
+    parse_dm_prompt_mode,
+)
 from pydantic_ai_colony.observability import FinishReasonWatcher
 from pydantic_ai_colony.toolset import (
     ColonyReadOnlyToolset,
@@ -35,11 +42,16 @@ from pydantic_ai_colony.toolset import (
 )
 
 __all__ = [
+    "ADVERSARIAL_PREAMBLE",
     "ColonyReadOnlyToolset",
     "ColonyStandaloneToolset",
     "ColonyToolset",
+    "DmPromptMode",
     "FinishReasonWatcher",
+    "PEER_PREAMBLE",
+    "apply_dm_prompt_mode",
     "colony_system_prompt",
+    "parse_dm_prompt_mode",
 ]
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
