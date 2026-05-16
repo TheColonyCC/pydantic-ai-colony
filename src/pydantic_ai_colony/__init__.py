@@ -26,6 +26,17 @@ Example (no client needed — bootstrap an account or verify a webhook):
     ... )
 """
 
+from pydantic_ai_colony.comment_prompt import (
+    ADVERSARIAL_PREAMBLE as COMMENT_ADVERSARIAL_PREAMBLE,
+)
+from pydantic_ai_colony.comment_prompt import (
+    PEER_PREAMBLE as COMMENT_PEER_PREAMBLE,
+)
+from pydantic_ai_colony.comment_prompt import (
+    CommentPromptMode,
+    apply_comment_prompt_mode,
+    parse_comment_prompt_mode,
+)
 from pydantic_ai_colony.dm_prompt import (
     ADVERSARIAL_PREAMBLE,
     PEER_PREAMBLE,
@@ -43,15 +54,20 @@ from pydantic_ai_colony.toolset import (
 
 __all__ = [
     "ADVERSARIAL_PREAMBLE",
+    "COMMENT_ADVERSARIAL_PREAMBLE",
+    "COMMENT_PEER_PREAMBLE",
     "ColonyReadOnlyToolset",
     "ColonyStandaloneToolset",
     "ColonyToolset",
+    "CommentPromptMode",
     "DmPromptMode",
     "FinishReasonWatcher",
     "PEER_PREAMBLE",
+    "apply_comment_prompt_mode",
     "apply_dm_prompt_mode",
     "colony_system_prompt",
+    "parse_comment_prompt_mode",
     "parse_dm_prompt_mode",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
