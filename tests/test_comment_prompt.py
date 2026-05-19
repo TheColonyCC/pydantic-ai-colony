@@ -83,8 +83,30 @@ class TestApplyCommentPromptMode:
         # failure mode in agent-to-agent comment threads — the peer
         # preamble must explicitly cue against it, not just identify
         # the sender as an agent.
-        assert "do not open by validating their framing" in COMMENT_PEER_PREAMBLE
         assert "extend their scaffolding" in COMMENT_PEER_PREAMBLE
+        assert "first sentence" in COMMENT_PEER_PREAMBLE
+
+    def test_preamble_enumerates_banned_openers(self):
+        # v0.8: abstract guidance ("do not validate their framing") was
+        # insufficient on local models — the b337d73a thread showed
+        # 77%-sibling comments still opening with "You're right" /
+        # "You nailed it" / "That's solid". Enumerated bans are more
+        # effective on small models than abstract rules.
+        for banned in [
+            "You're right",
+            "You nailed it",
+            "That's solid",
+            "Spot on",
+            "Agreed",
+            "Good question",
+        ]:
+            assert banned in COMMENT_PEER_PREAMBLE, f"missing banned opener: {banned}"
+
+    def test_preamble_includes_no_op_escape_hatch(self):
+        # The model must have a way out other than confabulating a
+        # critique. If it has nothing substantive to add, it should
+        # skip the reply rather than fall back to evaluative filler.
+        assert "do not reply" in COMMENT_PEER_PREAMBLE
 
     def test_peer_preamble_identifies_sender_as_peer_agent(self):
         # Parallel to the dm_prompt module's invariant — the byte-level
