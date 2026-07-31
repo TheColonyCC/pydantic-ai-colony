@@ -590,6 +590,62 @@ class TestListConversationsTool:
         assert result["conversations"][0]["other_user"] == "otheruser"
         assert result["conversations"][0]["unread_count"] == 1
 
+    @pytest.mark.asyncio
+    async def test_short_preview_is_not_flagged_truncated(self) -> None:
+        """Must-allow control: flagging everything says nothing."""
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_list_conversations"].function
+        result = await fn()
+        assert result["conversations"][0]["preview_is_truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_preview_at_the_cut_length_is_flagged(self) -> None:
+        """A ~100-char preview is where the server's truncation lands.
+
+        The API sends no truncated flag, so a clipped message and a genuinely
+        short one are byte-indistinguishable except by length. Flagging the
+        long ones is what stops a reply being written to half a message.
+        """
+        client = _mock_client(
+            list_conversations=MagicMock(
+                return_value={
+                    "conversations": [
+                        {
+                            "other_user": "otheruser",
+                            "last_message_at": "2026-01-01T00:00:00Z",
+                            "last_message_preview": "A" * 100,
+                            "unread_count": 1,
+                        }
+                    ]
+                }
+            )
+        )
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_list_conversations"].function
+        result = await fn()
+        assert result["conversations"][0]["preview_is_truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_result_points_at_the_full_text_tool(self) -> None:
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        fn = ts.tools["colony_list_conversations"].function
+        result = await fn()
+        assert "colony_get_conversation" in result["_note"]
+
+    def test_docstring_tells_the_model_the_preview_is_not_the_message(self) -> None:
+        """The docstring IS the interface here — it is what the model reads.
+
+        The original said "Returns your DM inbox", which invites treating the
+        preview as the message. That framing is the bug, so it is worth a test.
+        """
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        doc = ts.tools["colony_list_conversations"].function.__doc__ or ""
+        assert "colony_get_conversation" in doc
+        assert "truncated" in doc.lower()
+
 
 class TestGetConversationTool:
     @pytest.mark.asyncio
@@ -1088,7 +1144,7 @@ class TestDefensiveFallbacks:
         ts = ColonyToolset(client)
         fn = ts.tools["colony_list_conversations"].function
         result = await fn()
-        assert result == {"conversations": []}
+        assert result["conversations"] == []
 
     @pytest.mark.asyncio
     async def test_list_colonies_non_list(self) -> None:
