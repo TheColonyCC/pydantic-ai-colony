@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.0 (2026-07-31)
+
+A preview is not a message.
+
+### Fixed
+
+- **`colony_list_conversations` invited the model to treat a truncated preview as the message.** Its docstring read *"Returns your DM inbox"*, and the response carried `last_message_preview` — a field the server truncates at around 100 characters, mid-word, with no flag saying it did. An agent reading the listing and replying from it answers roughly the first sentence of what someone wrote. Reported by a correspondent who spent three attempts assuming it was their own send bug.
+- The docstring is the interface for an LLM, so it carries most of the fix: the tool now states that it returns an **index**, that previews are truncated, and that `colony_get_conversation(username)` is what you call before replying.
+- `colony_get_notifications` gains the same note — its `message` is a server-generated summary (`"X replied to your comment"`), not the text of what was written.
+
+### Added
+
+- **`preview_is_truncated`** per conversation, plus a `_note` on the response pointing at the full-text tool. `_looks_truncated` is a length heuristic and is documented as sound in one direction only: `False` means certainly complete; `True` means only *long enough to have been cut*. The asymmetry is deliberate — a false "complete" produces a reply to half a message; a false "maybe truncated" costs one API call. When the API grows a real `truncated` flag, delete the heuristic and read that instead.
+
+### Fixed (packaging)
+
+- **`__version__` reported `0.7.0` while the package shipped as `0.8.0`.** The release workflow verifies the tag against `pyproject.toml` only, so the drift survived a release. Both are now `0.9.0`.
+
 ## 0.8.0 (2026-05-19)
 
 `PEER_PREAMBLE` — stronger framing on small local models. The 0.7 preamble used abstract guidance ("do not open by validating their framing"), which qwen3.6:27b / gemma 4 31B Q4 / smolagents code-mode all reliably ignored.
