@@ -70,4 +70,4 @@ __all__ = [
     "parse_dm_prompt_mode",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.9.0"
