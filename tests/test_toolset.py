@@ -1162,7 +1162,11 @@ class TestColonyStandaloneToolset:
     def test_creates_toolset(self) -> None:
         ts = ColonyStandaloneToolset()
         assert ts.id == "colony-standalone"
-        assert set(ts.tools.keys()) == {"colony_register", "colony_verify_webhook"}
+        assert set(ts.tools.keys()) == {
+            "colony_register_begin",
+            "colony_register_confirm",
+            "colony_verify_webhook",
+        }
 
     def test_custom_id(self) -> None:
         ts = ColonyStandaloneToolset(id="my-bootstrap")
@@ -1171,7 +1175,8 @@ class TestColonyStandaloneToolset:
     def test_no_client_required(self) -> None:
         # The whole point: instantiable without any ColonyClient.
         ts = ColonyStandaloneToolset()
-        assert "colony_register" in ts.tools
+        assert "colony_register_begin" in ts.tools
+        assert "colony_register_confirm" in ts.tools
         assert "colony_verify_webhook" in ts.tools
 
     def test_disable_instructions(self) -> None:
@@ -1180,38 +1185,73 @@ class TestColonyStandaloneToolset:
         assert ts.id == "colony-standalone"
 
 
-class TestColonyRegisterTool:
+class TestColonyRegisterTools:
+    """Two tools, not one.
+
+    Fusing begin+confirm would hand back a live account whose only copy of the
+    key is a context window about to be truncated — the exact failure the SDK's
+    two-step flow was introduced to stop. These tests pin the split so a later
+    "simplification" has to argue with a red build.
+    """
+
+    def test_there_are_two_of_them_and_no_fused_shortcut(self) -> None:
+        ts = ColonyStandaloneToolset()
+        assert "colony_register_begin" in ts.tools
+        assert "colony_register_confirm" in ts.tools
+        assert "colony_register" not in ts.tools, (
+            "a single fused register tool defeats the point of two-step registration"
+        )
+
     @pytest.mark.asyncio
-    async def test_returns_api_key_on_success(self) -> None:
-        # ColonyClient.register is a static method on the SDK class.
-        # Patch it for the duration of the test.
-        with patch("pydantic_ai_colony.toolset.ColonyClient.register") as register:
-            register.return_value = {
+    async def test_begin_returns_the_key_and_says_it_is_not_finished(self) -> None:
+        with patch("pydantic_ai_colony.toolset.ColonyClient.register_begin") as begin:
+            begin.return_value = {
                 "id": "user-new-1",
                 "username": "newagent",
                 "display_name": "New Agent",
                 "api_key": "col_freshly_minted_key",
+                "claim_token": "claim-abc",
             }
             ts = ColonyStandaloneToolset()
-            fn = ts.tools["colony_register"].function
+            fn = ts.tools["colony_register_begin"].function
             result = await fn(
                 username="newagent",
                 display_name="New Agent",
                 bio="A brand-new agent",
             )
-            register.assert_called_once_with("newagent", "New Agent", "A brand-new agent")
+            begin.assert_called_once_with("newagent", "New Agent", "A brand-new agent")
             assert result["api_key"] == "col_freshly_minted_key"
-            assert result["username"] == "newagent"
-            assert result["id"] == "user-new-1"
+            assert result["claim_token"] == "claim-abc"
+            # Derived here so the caller cannot get the slice wrong.
+            assert result["key_fingerprint"] == "ed_key"
+            # A caller that stops here has a dead account; the payload has to say so.
+            assert "does not work until" in result["next_step"]
+
+    @pytest.mark.asyncio
+    async def test_the_begin_docstring_warns_the_key_is_shown_once(self) -> None:
+        ts = ColonyStandaloneToolset()
+        doc = ts.tools["colony_register_begin"].function.__doc__ or ""
+        assert "once" in doc.lower()
+        assert "durable" in doc.lower()
+
+    @pytest.mark.asyncio
+    async def test_confirm_activates(self) -> None:
+        with patch("pydantic_ai_colony.toolset.ColonyClient.register_confirm") as confirm:
+            confirm.return_value = {"id": "user-new-1", "username": "newagent", "active": True}
+            ts = ColonyStandaloneToolset()
+            fn = ts.tools["colony_register_confirm"].function
+            result = await fn(claim_token="claim-abc", key_fingerprint="ed_key")
+            confirm.assert_called_once_with("claim-abc", "ed_key")
+            assert result["active"] is True
 
     @pytest.mark.asyncio
     async def test_handles_username_taken_error(self) -> None:
         from colony_sdk import ColonyAPIError
 
-        with patch("pydantic_ai_colony.toolset.ColonyClient.register") as register:
-            register.side_effect = ColonyAPIError("Username already taken", 409, {})
+        with patch("pydantic_ai_colony.toolset.ColonyClient.register_begin") as begin:
+            begin.side_effect = ColonyAPIError("Username already taken", 409, {})
             ts = ColonyStandaloneToolset()
-            fn = ts.tools["colony_register"].function
+            fn = ts.tools["colony_register_begin"].function
             result = await fn(username="taken", display_name="Taken", bio="...")
             # _safe_result wraps API errors as a structured error dict
             # rather than raising — the LLM gets a clear failure signal
