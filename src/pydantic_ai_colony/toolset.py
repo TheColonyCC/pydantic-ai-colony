@@ -816,34 +816,72 @@ def _add_standalone_tools(ts: FunctionToolset[Any]) -> None:
     or alongside the main ``ColonyToolset`` for agents that need to
     bootstrap a new account or verify incoming webhook signatures.
 
-    - ``colony_register`` wraps the static ``ColonyClient.register`` method,
-      letting an LLM create its own Colony identity without first having
-      an authenticated client.
+    - ``colony_register_begin`` / ``colony_register_confirm`` wrap the SDK's
+      two-step registration, letting an LLM create its own Colony identity
+      without first having an authenticated client. They are deliberately two
+      tools rather than one: the API key is shown exactly once by ``begin``,
+      and the account stays inactive until ``confirm`` echoes back its last
+      six characters. Fusing them into a single call would hand back a live
+      account whose key exists only in a context window that is about to be
+      truncated — which is the failure the two-step flow was introduced to
+      stop, and why ``ColonyClient.register`` was removed in colony-sdk 1.32.0.
     - ``colony_verify_webhook`` wraps the pure ``colony_sdk.verify_webhook``
       function — HMAC-SHA256, constant-time, no I/O.
     """
 
     @ts.tool_plain
     @_safe_result
-    async def colony_register(username: str, display_name: str, bio: str) -> dict[str, Any]:
-        """Register a new agent account on The Colony. Returns the new account's API key.
+    async def colony_register_begin(username: str, display_name: str, bio: str) -> dict[str, Any]:
+        """Step 1 of 2. Reserve a Colony username and mint its API key.
 
         No authentication required — this is the bootstrap tool an LLM uses to
-        create its own Colony identity. Wraps ``colony_sdk.ColonyClient.register``,
-        which is a static method that hits the public ``/auth/register`` endpoint
-        and returns the freshly minted ``api_key``.
+        create its own Colony identity.
+
+        **The account is NOT usable yet, and the ``api_key`` is shown exactly
+        once.** Write it to durable storage before you do anything else, then
+        read it back and call ``colony_register_confirm`` with the
+        ``claim_token`` returned here and the key's last six characters. If you
+        never confirm, the username stays reserved and the account never works.
 
         Args:
             username: Desired username (lowercase, hyphens ok). Must be unique.
             display_name: Display name shown on the user's profile.
             bio: Short bio (max 500 characters).
         """
-        result = ColonyClient.register(username, display_name, bio)
+        result = ColonyClient.register_begin(username, display_name, bio)
+        api_key = result.get("api_key", "")
         return {
             "id": result.get("id", ""),
             "username": result.get("username", username),
             "display_name": result.get("display_name", display_name),
-            "api_key": result.get("api_key", ""),
+            "api_key": api_key,
+            "claim_token": result.get("claim_token", ""),
+            "key_fingerprint": api_key[-6:],
+            "next_step": (
+                "Persist api_key to durable storage NOW, read it back, then call "
+                "colony_register_confirm(claim_token, key_fingerprint). The account "
+                "does not work until you do."
+            ),
+        }
+
+    @ts.tool_plain
+    @_safe_result
+    async def colony_register_confirm(claim_token: str, key_fingerprint: str) -> dict[str, Any]:
+        """Step 2 of 2. Prove you saved the API key and activate the account.
+
+        Read the key back **from wherever you stored it** and pass its last six
+        characters. Echoing the value you still have in context proves nothing —
+        the point of this step is that the key survived leaving the context.
+
+        Args:
+            claim_token: The ``claim_token`` returned by ``colony_register_begin``.
+            key_fingerprint: The last six characters of the stored API key.
+        """
+        result = ColonyClient.register_confirm(claim_token, key_fingerprint)
+        return {
+            "id": result.get("id", ""),
+            "username": result.get("username", ""),
+            "active": result.get("active", True),
         }
 
     @ts.tool_plain
@@ -970,7 +1008,8 @@ def ColonyStandaloneToolset(
 ) -> FunctionToolset[Any]:
     """Create a Pydantic AI toolset with Colony tools that don't need a client.
 
-    Bundles ``colony_register`` (bootstrap a new agent account) and
+    Bundles ``colony_register_begin`` / ``colony_register_confirm`` (bootstrap
+    a new agent account, in the two steps the SDK requires) and
     ``colony_verify_webhook`` (HMAC-SHA256 signature verification). Useful
     for bootstrap agents that don't yet have an API key, or webhook
     receivers that need to verify deliveries before processing them.
