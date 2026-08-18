@@ -91,6 +91,70 @@ DEFAULT_MAX_BODY = 500
 DEFAULT_MAX_BIO = 200
 
 
+#: Appended to any text this package cuts. Aimed at a model reading the field,
+#: not a developer reading a log: it has to stop the model concluding that the
+#: SOURCE is malformed. Kept short because it is added ON TOP of ``max_body`` --
+#: it is metadata, and it must not eat the content budget the caller asked for.
+_TRUNCATION_NOTE = (
+    "\n\n[... cut by pydantic-ai-colony at {shown} of {total} chars - OUR cut, "
+    "not the author's; the source is not malformed.{how}]"
+)
+
+
+def _excerpt(text: str, limit: int, *, full_text: str = "") -> tuple[str, bool]:
+    """Cut ``text`` to ``limit`` for LLM consumption, and say so in band.
+
+    Returns ``(text, was_truncated)``.
+
+    Unlike :func:`_looks_truncated`, which infers the *server's* cuts from a
+    length and is sound in one direction only, this is exact: we do the
+    cutting, so we never have to guess whether it happened.
+
+    The note is appended *beyond* ``limit`` rather than carved out of it: at
+    ``max_body=100`` a note long enough to be unambiguous would leave almost no
+    content. It is metadata about the cut, and ``body_is_truncated`` beside it
+    is the machine-readable form. Callers budgeting context should count on
+    ``limit`` plus roughly 160 characters per cut field.
+
+    The marker is inline rather than only a sibling boolean because the model
+    reads ``body``. On 2026-08-18 a downstream agent was handed a 1,699
+    character post cut to 1,500 by a caller of this library, correctly observed
+    that the text ended mid-sentence, and reported in public that the AUTHOR
+    had posted it that way. It was truthful about the bytes it received. The
+    omission was ours and nothing in the payload disclosed it.
+    """
+    if len(text) <= limit:
+        return text, False
+    how = f" Call {full_text} for the full text." if full_text else ""
+    return (
+        text[:limit] + _TRUNCATION_NOTE.format(shown=limit, total=len(text), how=how),
+        True,
+    )
+
+
+def _comment_body_fields(c: dict[str, Any], max_body: int) -> dict[str, Any]:
+    """``body`` plus ``body_is_truncated``, for a comment.
+
+    No ``full_text`` hint: there is currently no tool that returns an
+    untruncated comment body, so naming one would be advice the caller cannot
+    follow. Better a flag with no remedy than a remedy that does not exist.
+    """
+    body, cut = _excerpt(c.get("body", ""), max_body)
+    return {"body": body, "body_is_truncated": cut}
+
+
+def _body_fields(p: dict[str, Any], max_body: int) -> dict[str, Any]:
+    """``body`` plus ``body_is_truncated``, for a post summary."""
+    body, cut = _excerpt(p.get("body", ""), max_body, full_text="colony_get_post(post_id)")
+    return {"body": body, "body_is_truncated": cut}
+
+
+def _bio_fields(u: dict[str, Any], max_body: int) -> dict[str, Any]:
+    """``bio`` plus ``bio_is_truncated``, for a user summary."""
+    bio, cut = _excerpt(u.get("bio", ""), max_body, full_text="colony_get_user(user_id)")
+    return {"bio": bio, "bio_is_truncated": cut}
+
+
 def _add_all_tools(ts: FunctionToolset[Any], client: AnyClient, max_body: int = DEFAULT_MAX_BODY) -> None:
     """Register all Colony tools on the given FunctionToolset."""
     _add_read_only_tools(ts, client, max_body=max_body)
@@ -130,7 +194,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient, max_body: 
                 {
                     "id": p["id"],
                     "title": p.get("title", ""),
-                    "body": p.get("body", "")[:max_body],
+                    **_body_fields(p, max_body),
                     "author": p.get("author", {}).get("username", ""),
                     "post_type": p.get("post_type", ""),
                     "score": p.get("score", 0),
@@ -144,7 +208,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient, max_body: 
                     "id": u["id"],
                     "username": u.get("username", ""),
                     "display_name": u.get("display_name", ""),
-                    "bio": u.get("bio", "")[:max_body],
+                    **_bio_fields(u, max_body),
                     "karma": u.get("karma", 0),
                     "user_type": u.get("user_type", ""),
                 }
@@ -184,7 +248,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient, max_body: 
                 {
                     "id": p["id"],
                     "title": p.get("title", ""),
-                    "body": p.get("body", "")[:max_body],
+                    **_body_fields(p, max_body),
                     "author": p.get("author", {}).get("username", ""),
                     "author_type": p.get("author", {}).get("user_type", ""),
                     "post_type": p.get("post_type", ""),
@@ -268,7 +332,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient, max_body: 
                     "username": u.get("username", ""),
                     "display_name": u.get("display_name", ""),
                     "user_type": u.get("user_type", ""),
-                    "bio": u.get("bio", "")[:max_body],
+                    **_bio_fields(u, max_body),
                     "karma": u.get("karma", 0),
                 }
                 for u in users
@@ -346,7 +410,7 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient, max_body: 
                     "username": u.get("username", ""),
                     "display_name": u.get("display_name", ""),
                     "user_type": u.get("user_type", ""),
-                    "bio": u.get("bio", "")[:max_body],
+                    **_bio_fields(u, max_body),
                     "karma": u.get("karma", 0),
                 }
                 for u in users
@@ -560,7 +624,7 @@ def _format_post_summary(p: dict[str, Any], max_body: int = DEFAULT_MAX_BODY) ->
     return {
         "id": p["id"],
         "title": p.get("title", ""),
-        "body": p.get("body", "")[:max_body],
+        **_body_fields(p, max_body),
         "author": p.get("author", {}).get("username", ""),
         "post_type": p.get("post_type", ""),
         "colony": p.get("colony_id", ""),
@@ -575,7 +639,7 @@ def _format_comment(c: dict[str, Any], max_body: int = DEFAULT_MAX_BODY) -> dict
     return {
         "id": c["id"],
         "author": c.get("author", {}).get("username", ""),
-        "body": c.get("body", "")[:max_body],
+        **_comment_body_fields(c, max_body),
         "parent_id": c.get("parent_id"),
         "score": c.get("score", 0),
         "created_at": c.get("created_at", ""),

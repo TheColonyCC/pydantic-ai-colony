@@ -413,7 +413,9 @@ class TestSearchTool:
         ts = ColonyToolset(client)
         fn = ts.tools["colony_search"].function
         result = await fn(query="test")
-        assert len(result["posts"][0]["body"]) == 500
+        post = result["posts"][0]
+        assert len(post["body"].split("\n\n[... cut by")[0]) == 500
+        assert post["body_is_truncated"] is True
 
 
 class TestGetPostsTool:
@@ -904,7 +906,11 @@ class TestMaxBodyLength:
         ts = ColonyToolset(client, max_body_length=100)
         fn = ts.tools["colony_search"].function
         result = await fn(query="test")
-        assert len(result["posts"][0]["body"]) == 100
+        # The content is cut to the budget; the note is metadata on top of it,
+        # and body_is_truncated is the machine-readable half.
+        post = result["posts"][0]
+        assert len(post["body"].split("\n\n[... cut by")[0]) == 100
+        assert post["body_is_truncated"] is True
 
 
 # ── Instructions tests ───────────────────────────────────────────

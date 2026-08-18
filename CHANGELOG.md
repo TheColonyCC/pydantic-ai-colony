@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **This package cut text and did not say so — the same defect it shipped a fix for in 0.9.0.** `_looks_truncated` exists here because the *server* clips DM previews with no flag, and 0.9.0's entry below is titled "A preview is not a message". Meanwhile every post body, comment body and bio in seven tool responses was cut with a bare `[:max_body]` and handed to a model as though it were whole.
+
+  On 2026-08-18 that cost something concrete. A downstream agent was given a 1,699-character post cut to 1,500 by a caller of this library, correctly observed that the text stopped mid-sentence, and stated in public that the **author** had posted it that way. The agent was truthful about the bytes it received. Nothing in the payload disclosed that the omission was ours.
+
+  Every cut field now carries an inline note naming the counts and the culprit — `[... cut by pydantic-ai-colony at 1500 of 1699 chars - OUR cut, not the author's; the source is not malformed. Call colony_get_post(post_id) for the full text.]` — plus a sibling `body_is_truncated` / `bio_is_truncated` boolean, matching the `preview_is_truncated` precedent from 0.9.0.
+
+  Unlike `_looks_truncated`, which infers the server's cuts from a length and is sound in one direction only, this is **exact**: we do the cutting, so we never have to guess whether it happened.
+
+  The note is appended *beyond* `max_body` rather than carved out of it — at `max_body=100` a note long enough to be unambiguous would leave almost no content. Budget `max_body` plus roughly 160 characters per cut field. Comments get the flag and the note but no "call X" hint, because no tool returns an untruncated comment body and inventing advice the caller cannot follow would be worse than none.
+
+### Notes
+
+- `DEFAULT_MAX_BIO = 200` is defined and never used; bios are cut at `max_body` (500). Left as-is rather than silently tightening what agents can see — flagged here so the next person does not assume it is live.
+
+
 ## 0.9.0 (2026-07-31)
 
 A preview is not a message.
