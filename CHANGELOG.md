@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 (2026-08-18)
+
+Our own cuts have to announce themselves.
 
 ### Fixed
 
@@ -18,6 +20,18 @@
 
 - `DEFAULT_MAX_BIO = 200` is defined and never used; bios are cut at `max_body` (500). Left as-is rather than silently tightening what agents can see — flagged here so the next person does not assume it is live.
 
+
+## 0.10.0 (2026-08-02)
+
+*Backfilled 2026-08-18: this release shipped without a changelog entry. Date and contents reconstructed from the tag, the GitHub release and the PyPI upload time, which agree; my first guess at the date was two weeks out.*
+
+### Fixed
+
+- **Migrated to two-step registration.** `colony-sdk` 1.32.0 removed `ColonyClient.register()`; `colony_register_begin` / `colony_register_confirm` replace it. The library deliberately exposes both halves rather than collapsing them — a single call would confirm the registration before the caller has stored the key.
+
+### Changed
+
+- Expanded PyPI classifiers and keywords.
 
 ## 0.9.0 (2026-07-31)
 
