@@ -557,6 +557,46 @@ class TestGetMeTool:
         assert result["karma"] == 100
 
 
+_ACTOR = {"id": "user-2", "username": "alice", "display_name": "Alice", "user_type": "agent"}
+
+#: The server's shape for a reply notification (comment_preview since
+#: 2026-11-02) and a DM notification (conversation_id / message_id).
+_REPLY_NOTIFICATION = {
+    "id": "notif-reply",
+    "notification_type": "reply",
+    "message": "Alice replied to your comment",
+    "actor": _ACTOR,
+    "post_id": "post-1",
+    "comment_id": "comment-9",
+    "conversation_id": None,
+    "message_id": None,
+    "wiki_page_id": None,
+    "comment_preview": {
+        "id": "comment-9",
+        "parent_id": "comment-1",
+        "created_at": "2026-11-18T17:00:00Z",
+        "excerpt": "I think the second approach is better because…",
+        "truncated": True,
+    },
+    "is_read": False,
+    "created_at": "2026-11-18T17:00:00Z",
+}
+_DM_NOTIFICATION = {
+    "id": "notif-dm",
+    "notification_type": "direct_message",
+    "message": "Alice: Can you look at the build log before the release goes...",
+    "actor": _ACTOR,
+    "post_id": None,
+    "comment_id": None,
+    "conversation_id": "conv-1",
+    "message_id": "msg-7",
+    "wiki_page_id": None,
+    "comment_preview": None,
+    "is_read": False,
+    "created_at": "2026-11-18T17:01:00Z",
+}
+
+
 class TestGetNotificationsTool:
     @pytest.mark.asyncio
     async def test_calls_sdk(self) -> None:
@@ -567,6 +607,51 @@ class TestGetNotificationsTool:
         client.get_notifications.assert_called_once_with(unread_only=True, limit=10)
         assert result["count"] == 1
         assert result["notifications"][0]["type"] == "reply"
+
+    @pytest.mark.asyncio
+    async def test_reply_carries_the_comment_text(self) -> None:
+        """The comment itself, not only "X replied to your comment"."""
+        client = _mock_client(get_notifications=MagicMock(return_value=[_REPLY_NOTIFICATION]))
+        ts = ColonyToolset(client)
+        result = await ts.tools["colony_get_notifications"].function()
+        n = result["notifications"][0]
+        assert n["comment_id"] == "comment-9"
+        assert n["comment_preview"] == _REPLY_NOTIFICATION["comment_preview"]
+        assert n["comment_preview"]["truncated"] is True
+        assert n["actor"]["username"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_direct_message_carries_its_conversation_and_message(self) -> None:
+        client = _mock_client(get_notifications=MagicMock(return_value=[_DM_NOTIFICATION]))
+        ts = ColonyToolset(client)
+        result = await ts.tools["colony_get_notifications"].function()
+        n = result["notifications"][0]
+        assert n["conversation_id"] == "conv-1"
+        assert n["message_id"] == "msg-7"
+        assert n["comment_preview"] is None
+        # The username is what colony_get_conversation takes; the message line
+        # names only the display name.
+        assert n["actor"]["username"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_older_response_without_the_new_fields(self) -> None:
+        """Absent keys come back as None rather than raising."""
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        n = (await ts.tools["colony_get_notifications"].function())["notifications"][0]
+        for key in ("actor", "comment_id", "comment_preview", "conversation_id", "message_id"):
+            assert n[key] is None
+
+    def test_docstring_says_where_the_text_is(self) -> None:
+        """The old docstring said a notification was "not the text of what
+        was written". Reply notifications now carry it, and saying otherwise
+        sends the model to look for it in the thread."""
+        client = _mock_client()
+        ts = ColonyToolset(client)
+        doc = ts.tools["colony_get_notifications"].function.__doc__ or ""
+        assert "not the text of what was written" not in doc
+        for phrase in ("comment_preview", "500", "truncated", "/api/v1/comments/", "conversation_id", "80"):
+            assert phrase in doc
 
 
 class TestGetPollTool:
@@ -592,6 +677,35 @@ class TestListConversationsTool:
         assert result["conversations"][0]["other_user"] == "otheruser"
         assert result["conversations"][0]["unread_count"] == 1
 
+    @staticmethod
+    async def _preview_flag(**conversation: Any) -> bool:
+        row = {
+            "other_user": "otheruser",
+            "last_message_at": "2026-01-01T00:00:00Z",
+            "unread_count": 1,
+            **conversation,
+        }
+        client = _mock_client(list_conversations=MagicMock(return_value=[row]))
+        ts = ColonyToolset(client)
+        result = await ts.tools["colony_list_conversations"].function()
+        flag = result["conversations"][0]["preview_is_truncated"]
+        assert isinstance(flag, bool)
+        return flag
+
+    @pytest.mark.asyncio
+    async def test_server_flag_true_is_read(self) -> None:
+        """Since 2026-11-18 the server says. A short word-cut preview is under
+        the length hint, so only the flag can report it."""
+        assert await self._preview_flag(
+            last_message_preview="Supercalifragilistic…", last_message_preview_truncated=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_server_flag_false_is_read(self) -> None:
+        """Control: a whole 120-character message is long, and not cut. The
+        flag beats the length guess in both directions."""
+        assert not await self._preview_flag(last_message_preview="A" * 120, last_message_preview_truncated=False)
+
     @pytest.mark.asyncio
     async def test_short_preview_is_not_flagged_truncated(self) -> None:
         """Must-allow control: flagging everything says nothing."""
@@ -602,31 +716,16 @@ class TestListConversationsTool:
         assert result["conversations"][0]["preview_is_truncated"] is False
 
     @pytest.mark.asyncio
-    async def test_preview_at_the_cut_length_is_flagged(self) -> None:
-        """A ~100-char preview is where the server's truncation lands.
+    async def test_fallback_without_the_flag_flags_a_long_preview(self) -> None:
+        """No ``last_message_preview_truncated`` (an older server): a server
+        before 2026-09-09 cut a bare ~100 characters, and a clipped message and
+        a genuinely short one differ only by length."""
+        assert await self._preview_flag(last_message_preview="A" * 100)
 
-        The API sends no truncated flag, so a clipped message and a genuinely
-        short one are byte-indistinguishable except by length. Flagging the
-        long ones is what stops a reply being written to half a message.
-        """
-        client = _mock_client(
-            list_conversations=MagicMock(
-                return_value={
-                    "conversations": [
-                        {
-                            "other_user": "otheruser",
-                            "last_message_at": "2026-01-01T00:00:00Z",
-                            "last_message_preview": "A" * 100,
-                            "unread_count": 1,
-                        }
-                    ]
-                }
-            )
-        )
-        ts = ColonyToolset(client)
-        fn = ts.tools["colony_list_conversations"].function
-        result = await fn()
-        assert result["conversations"][0]["preview_is_truncated"] is True
+    @pytest.mark.asyncio
+    async def test_fallback_without_the_flag_flags_a_word_cut(self) -> None:
+        """No flag, but the "…" a server from 2026-09-09 marks its cut with."""
+        assert await self._preview_flag(last_message_preview="See the attached…")
 
     @pytest.mark.asyncio
     async def test_result_points_at_the_full_text_tool(self) -> None:
