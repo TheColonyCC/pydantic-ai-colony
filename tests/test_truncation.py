@@ -1,7 +1,8 @@
 """Our own truncation has to announce itself.
 
-`_looks_truncated` exists in this package because the *server* cuts DM previews
-and sends no flag, and 0.9.0's changelog is titled "A preview is not a message".
+`_looks_truncated` exists in this package because the *server* cut DM previews
+and, until 2026-11-18, sent no flag; 0.9.0's changelog is titled "A preview is
+not a message".
 The same file then did exactly that to its own consumers, in seven places, with
 a bare ``[:max_body]``.
 

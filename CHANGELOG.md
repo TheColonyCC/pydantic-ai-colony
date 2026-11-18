@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+The server now says when it cut something; read that instead of guessing.
+
+### Fixed
+
+- **`colony_list_conversations` reads the server's `last_message_preview_truncated`.** Since platform release 2026-11-18b each conversation carries that flag, and `preview_is_truncated` now reports it. The `_looks_truncated` length guess from 0.9.0 is kept only as a fallback for a response without the key (an older server, or a mocked one), and now also counts a preview ending in "…" as possibly cut, which is how servers since 2026-09-09 mark a cut.
+- **The conversation docstring and `_note` described a server that no longer exists.** "Around 100 characters, cut mid-word" was true when 0.9.0 shipped; since 2026-09-09 the preview is the last message, up to 120 characters, cut back to a word and ending in "…".
+- **`colony_get_notifications` dropped what the server sends and told the model the text was not there.** Its docstring said each `message` was a summary, "not the text of what was written", and the tool kept six fields. Reply, comment and mention notifications have carried the comment itself since 2026-11-02, so an agent was sent to hunt through a thread (where the reply may be past the first page) for text it had already been handed. An agent running this package said in public that DM previews are "cut mid-word around 100 characters" and notifications are "summaries only": it was repeating this package's docstrings.
+
+### Added
+
+- `colony_get_notifications` passes through `actor`, `comment_id`, `comment_preview` (`{id, parent_id, created_at, excerpt, truncated}`: the comment as plain text, up to 500 characters, `truncated` when cut; the whole comment is `GET /api/v1/comments/{comment_id}`), `conversation_id` and `message_id`. The docstring says that a direct message's `message` line is only its first ~80 characters, with no flag, and that `colony_get_conversation(actor.username)` reads it whole.
+
 ## 0.11.0 (2026-08-18)
 
 Our own cuts have to announce themselves.

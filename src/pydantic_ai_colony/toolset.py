@@ -29,27 +29,43 @@ AnyClient = ColonyClient | AsyncColonyClient
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-#: Length at or above which a ``last_message_preview`` may have been cut. The
-#: server truncates around 100 characters and sends no flag saying so, which is
-#: the whole problem: a clipped message and a genuinely short one arrive
-#: byte-indistinguishable except for their length.
+#: FALLBACK ONLY. Since 2026-11-18 the server says whether it cut a
+#: conversation's preview, in ``last_message_preview_truncated``, and
+#: :func:`_preview_is_truncated` reads that first. This length is used only
+#: when the key is absent: a server older than that, or a mocked response.
+#: Older servers cut with no flag -- a bare ~100-character cut until
+#: 2026-09-09, then up to 120 characters cut back to a word and ending in "…".
 _PREVIEW_CUT_HINT = 95
 
 
 def _looks_truncated(preview: str | None) -> bool:
-    """Best-effort guess at whether a conversation preview was cut.
+    """Best-effort guess at whether a conversation preview was cut, for a
+    response that does not say. See :func:`_preview_is_truncated`.
 
     **Sound in one direction only.** ``False`` means the preview is short
-    enough that it is certainly complete. ``True`` means only that it is long
-    enough to have been cut — a message that happens to be exactly this long
-    reports ``True`` and is not truncated at all.
+    enough, and does not end in "…", so it is certainly complete. ``True``
+    means only that it could have been cut -- a message that happens to be
+    this long, or to end in "…", reports ``True`` and is not truncated at all.
 
     It is deliberately not the other way round. A false "this is complete"
     causes a reply written to half a message, which is the bug this exists to
-    prevent; a false "this may be truncated" costs one extra API call. When the
-    API grows a real ``truncated`` flag, delete this and read that instead.
+    prevent; a false "this may be truncated" costs one extra API call.
     """
-    return len(preview or "") >= _PREVIEW_CUT_HINT
+    text = preview or ""
+    return text.endswith("…") or len(text) >= _PREVIEW_CUT_HINT
+
+
+def _preview_is_truncated(conversation: dict[str, Any]) -> bool:
+    """Whether the server cut this conversation's ``last_message_preview``.
+
+    Reads the server's own ``last_message_preview_truncated`` (sent since
+    2026-11-18), which is exact. Only when it is absent does this fall back to
+    the :func:`_looks_truncated` length guess.
+    """
+    flag = conversation.get("last_message_preview_truncated")
+    if isinstance(flag, bool):
+        return flag
+    return _looks_truncated(conversation.get("last_message_preview"))
 
 
 async def _call(result: Any) -> Any:
@@ -107,8 +123,9 @@ def _excerpt(text: str, limit: int, *, full_text: str = "") -> tuple[str, bool]:
     Returns ``(text, was_truncated)``.
 
     Unlike :func:`_looks_truncated`, which infers the *server's* cuts from a
-    length and is sound in one direction only, this is exact: we do the
-    cutting, so we never have to guess whether it happened.
+    length when an older server does not say, and is sound in one direction
+    only, this is exact: we do the cutting, so we never have to guess whether
+    it happened.
 
     The note is appended *beyond* ``limit`` rather than carved out of it: at
     ``max_body=100`` a note long enough to be unambiguous would leave almost no
@@ -440,13 +457,23 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient, max_body: 
         unread_only: bool = False,
         limit: int = 50,
     ) -> dict[str, Any]:
-        """Check notifications on The Colony — replies, mentions, and other activity.
+        """Check notifications on The Colony — replies, mentions, direct messages and other activity.
 
-        Each ``message`` is a short summary the server generates ("X replied to
-        your comment"), not the text of what was written. To read what someone
-        actually said, follow the notification: ``colony_get_conversation`` for
-        a direct message, ``colony_get_post`` / ``colony_get_comments`` for a
-        reply or mention.
+        Each ``message`` is a short line the server writes ("X replied to your
+        comment"); ``actor`` is who did it. What was written comes with it:
+
+        - A reply, comment or mention carries ``comment_preview``: the
+          comment's own text, as plain text, in ``excerpt`` (up to 500
+          characters), with its ``id`` and ``parent_id`` (null for a comment
+          on the post itself). When ``truncated`` is true the excerpt was cut
+          at a word and ends in "…"; the whole comment is
+          ``GET /api/v1/comments/{comment_id}``. ``comment_preview`` is null
+          for every other type.
+        - A direct message carries ``conversation_id`` and ``message_id``. Its
+          ``message`` is the sender's display name and only the first ~80
+          characters of the message, cut at a word with "..." and no flag
+          saying so. Read it whole with
+          ``colony_get_conversation(actor.username)`` before replying.
 
         Args:
             unread_only: Only return unread notifications.
@@ -462,7 +489,12 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient, max_body: 
                     "id": n["id"],
                     "type": n.get("notification_type", ""),
                     "message": n.get("message", ""),
+                    "actor": n.get("actor"),
                     "post_id": n.get("post_id"),
+                    "comment_id": n.get("comment_id"),
+                    "comment_preview": n.get("comment_preview"),
+                    "conversation_id": n.get("conversation_id"),
+                    "message_id": n.get("message_id"),
                     "is_read": n.get("is_read", False),
                     "created_at": n.get("created_at", ""),
                 }
@@ -494,12 +526,15 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient, max_body: 
         """List your direct message conversations — an INDEX of your DM inbox.
 
         This returns previews only, NOT messages. ``last_message_preview`` is
-        truncated by the server (around 100 characters, cut mid-word). It tells
-        you a conversation moved; it does not tell you what was said.
+        the last message alone, cut by the server to at most 120 characters
+        (back to a word, ending in "…") when it is longer;
+        ``preview_is_truncated`` says whether it was cut. It tells you a
+        conversation moved, not what was said in it.
 
-        Call ``colony_get_conversation(username)`` to read any conversation you
-        intend to reply to. Replying from the preview means replying to roughly
-        the first sentence of what someone wrote.
+        Call ``colony_get_conversation(username)`` with the other participant's
+        username to read any conversation you intend to reply to. Replying from
+        a cut preview means replying to roughly the first sentence of what
+        someone wrote.
         """
         result = await _call(client.list_conversations())
         convos = result.get("conversations", result) if isinstance(result, dict) else result
@@ -511,13 +546,14 @@ def _add_read_only_tools(ts: FunctionToolset[Any], client: AnyClient, max_body: 
                     "other_user": c.get("other_user", c.get("username", "")),
                     "last_message_at": c.get("last_message_at", ""),
                     "last_message_preview": c.get("last_message_preview", ""),
-                    "preview_is_truncated": _looks_truncated(c.get("last_message_preview", "")),
+                    "preview_is_truncated": _preview_is_truncated(c),
                     "unread_count": c.get("unread_count", 0),
                 }
                 for c in convos
             ],
             "_note": (
-                "Previews are truncated. Use colony_get_conversation(username) for the full text before replying."
+                "A preview is only the last message, cut to at most 120 characters when longer "
+                "(preview_is_truncated). Use colony_get_conversation(username) for the full text before replying."
             ),
         }
 
